@@ -81,7 +81,7 @@ tidy: ## Run go work sync (if go.work exists) and go mod tidy per module.
 	find . -name go.mod -execdir sh -c 'go mod tidy' \;
 
 .PHONY: verify
-verify: vet fmt lint tidy ## Verify the codebase (vet, fmt, lint, tidy).
+verify: tidy vet fmt lint  ## Verify the codebase (tidy, vet, fmt, lint).
 
 .PHONY: test-unit
 test-unit: envtest ## Run unit tests. Optional: COVERAGE=true (or 1) for go tool cover summary.

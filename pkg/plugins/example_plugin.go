@@ -103,7 +103,7 @@ func (p *ExamplePlugin) ProcessRequest(ctx context.Context, cycleState *framewor
 	// request.RemoveHeader("header-to-remove")                     // example for removing a header.
 
 	// for mutation request body, use the appropriate Set/Remove functions.
-	// request.SetBody(map[string]any{"new": "body"})               // use SetBody to override the whole body at once. this is useful in specific use casees.
+	// request.SetBody(map[string]any{"new": "body"})               // use SetBody to override the whole body at once. this is useful in specific use cases.
 	// request.SetBodyField(exampleBodyFieldKey, fieldStr+fieldStr) // use SetBodyField to mutate a specific body field.
 	// request.RemoveBodyField("field-to-remove")                   // use RemoveBodyField to remove a specific body field.
 

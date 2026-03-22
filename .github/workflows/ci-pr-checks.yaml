@@ -1,0 +1,67 @@
+name: CI - PR Verify and Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      src: ${{ steps.filter.outputs.src }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            src:
+              - '**/*.go'
+              - Dockerfile
+              - Makefile
+              - go.mod
+              - go.sum
+              - go.work
+              - go.work.sum
+  lint-and-test:
+    needs: check-changes
+    if: ${{ needs.check-changes.outputs.src == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Sanity check repo contents
+        run: ls -la
+
+      - name: Extract Go version from go.mod
+        run: sed -En 's/^go (.*)$/GO_VERSION=\1/p' go.mod >> $GITHUB_ENV
+
+      - name: Set up Go with cache
+        uses: actions/setup-go@v6
+        with:
+          go-version: "${{ env.GO_VERSION }}"
+          cache-dependency-path: ./go.sum
+
+      - name: Run make verify
+        shell: bash
+        run: make verify
+
+      - name: Run make test
+        shell: bash
+        run: make test
