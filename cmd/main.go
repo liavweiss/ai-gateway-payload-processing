@@ -32,6 +32,7 @@ import (
 	api_translation "github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/api-translation"
 	apikey_injection "github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/apikey-injection"
 	provider_resolver "github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/model-provider-resolver"
+	nemo "github.com/opendatahub-io/ai-gateway-payload-processing/pkg/plugins/nemo"
 )
 
 func main() {
@@ -50,4 +51,5 @@ func registerPlugins() {
 	framework.Register(provider_resolver.ModelProviderResolverPluginType, provider_resolver.ModelProviderResolverFactory)
 	framework.Register(api_translation.APITranslationPluginType, api_translation.APITranslationFactory)
 	framework.Register(apikey_injection.APIKeyInjectionPluginType, apikey_injection.APIKeyInjectionFactory)
+	framework.Register(nemo.NemoRequestGuardPluginType, nemo.NemoRequestGuardFactory)
 }
