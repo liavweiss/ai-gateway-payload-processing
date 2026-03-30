@@ -1,0 +1,19 @@
+# Colang 1.0 — classifier-based content safety input rail.
+# Uses the check_content_safety custom action (actions.py) which runs
+# L0 Bouncer in-process. No LLM call is made.
+#
+# Convention: safe → respond "allowed", unsafe → respond with refusal message.
+
+define bot allow
+  "allowed"
+
+define bot refuse to respond
+  "I'm sorry, I can't respond to that. Your message has been flagged as potentially unsafe content."
+
+define subflow check content safety
+  $is_safe = execute check_content_safety
+  if not $is_safe
+    bot refuse to respond
+    stop
+  bot allow
+  stop

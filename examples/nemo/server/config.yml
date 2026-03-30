@@ -1,0 +1,12 @@
+# Classifier guard: L0 Bouncer (DeBERTa-v3-xsmall, 22M params) as a NeMo custom action.
+# No LLM, no vLLM sidecar — the classifier runs in-process on CPU in ~5ms.
+#
+# The custom action in actions.py loads the model at startup and is called
+# by the Colang input rail flow defined in config.co.
+
+colang_version: "1.0"
+
+rails:
+  input:
+    flows:
+      - check content safety

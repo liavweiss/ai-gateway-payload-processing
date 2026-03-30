@@ -1,0 +1,60 @@
+# NeMo Guardrails with in-process classifier guard.
+# Single container running the NeMo server + a custom Python action that loads
+# a DeBERTa safety classifier (L0 Bouncer, 22M params) and performs inference
+# on CPU. No sidecar, no GPU, no external model service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nemo-guardrails
+  namespace: nemo-guardrails
+  labels:
+    app: nemo-guardrails
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nemo-guardrails
+  template:
+    metadata:
+      labels:
+        app: nemo-guardrails
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nemo-guardrails
+          # deploy.sh overrides this tag with a content-addressable image ID.
+          image: nemoguardrails:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+          readinessProbe:
+            httpGet:
+              path: /v1/rails/configs
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /v1/rails/configs
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
