@@ -12,6 +12,20 @@ GIT_COMMIT_SHA ?= "$(shell git rev-parse HEAD 2>/dev/null)"
 GIT_TAG ?= $(shell git describe --tags --dirty --always)
 TARGETARCH ?= $(shell go env GOARCH)
 PLATFORMS ?= linux/$(TARGETARCH)
+
+# Go build environment (override on the CLI, e.g. make test-unit GO_STRICTFIPS=true).
+GO_STRICTFIPS ?= false
+CGO_ENABLED ?= 1
+
+ifeq ($(GO_STRICTFIPS),true)
+  GOEXPERIMENT ?= strictfipsruntime
+endif
+
+GO_ENV := CGO_ENABLED=$(CGO_ENABLED)
+ifdef GOEXPERIMENT
+  GO_ENV += GOEXPERIMENT=$(GOEXPERIMENT)
+endif
+
 DOCKER_BUILDX_CMD ?= docker buildx
 IMAGE_BUILD_CMD ?= $(DOCKER_BUILDX_CMD) build
 IMAGE_BUILD_EXTRA_OPTS ?=
@@ -20,12 +34,6 @@ IMAGE_REGISTRY ?= quay.io/opendatahub-io
 IMAGE_NAME := ai-gateway-payload-processing
 IMAGE_REPO ?= $(IMAGE_REGISTRY)/$(IMAGE_NAME)
 IMAGE_TAG ?= $(IMAGE_REPO):$(GIT_TAG)
-
-BASE_IMAGE ?= gcr.io/distroless/static:nonroot
-BUILDER_IMAGE ?= golang:1.25
-ifdef GO_VERSION
-BUILDER_IMAGE = golang:$(GO_VERSION)
-endif
 
 BUILD_REF ?= $(shell git describe --abbrev=0 2>/dev/null)
 ifdef EXTRA_TAG
@@ -55,6 +63,8 @@ KIND_CLUSTER ?= kind
 .PHONY: help
 help: ## Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@printf "\n\033[1mOptional build arguments\033[0m (e.g. \033[36mmake test-unit GO_STRICTFIPS=true\033[0m):\n"
+	@printf "  \033[36mGO_STRICTFIPS=true\033[0m  strict FIPS runtime for \033[36mtest-unit\033[0m (image-build is always FIPS-compliant)\n"
 
 ##@ Development
 
@@ -87,11 +97,19 @@ verify: tidy vet fmt lint  ## Verify the codebase (tidy, vet, fmt, lint).
 test-unit: envtest ## Run unit tests. Optional: COVERAGE=true (or 1) for go tool cover summary.
 	@set -e; \
 	kubebuilder_assets_path="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)"; \
-	CGO_ENABLED=1 KUBEBUILDER_ASSETS="$$kubebuilder_assets_path" go test ./pkg/... -race -count=1 -coverprofile=cover.out; \
+	$(GO_ENV) KUBEBUILDER_ASSETS="$$kubebuilder_assets_path" go test ./pkg/... -race -count=1 -coverprofile=cover.out; \
 	if [ "$(COVERAGE)" = "true" ] || [ "$(COVERAGE)" = "1" ]; then \
 		go tool cover -func=cover.out; \
 	fi; \
 	rm -f cover.out
+
+.PHONY: test-e2e
+test-e2e: ## Run E2E tests (requires cluster with Istio + BBR deployed).
+	go test ./test/e2e/ -v -ginkgo.v -count=1 -timeout=10m
+
+.PHONY: test-e2e-setup
+test-e2e-setup: ## Set up Kind cluster with Istio and BBR for E2E testing.
+	./test/e2e/scripts/setup-kind.sh
 
 .PHONY: test
 test: test-unit ## Run unit tests (alias for test-unit).
@@ -118,8 +136,6 @@ image-local-load: image-local-build
 image-build: ## Build the image using Docker Buildx.
 	$(IMAGE_BUILD_CMD) -t $(IMAGE_TAG) \
 		--platform=$(PLATFORMS) \
-		--build-arg BASE_IMAGE=$(BASE_IMAGE) \
-		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg COMMIT_SHA=${GIT_COMMIT_SHA} \
 		--build-arg BUILD_REF=${BUILD_REF} \
 		$(PUSH) \

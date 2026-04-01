@@ -1,0 +1,30 @@
+# ServiceEntry for simulator (mesh egress)
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: e2e-simulator
+  namespace: $E2E_NS
+spec:
+  hosts:
+  - e2e-simulator.external
+  location: MESH_EXTERNAL
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  resolution: STATIC
+  endpoints:
+  - address: $E2E_SIMULATOR_ENDPOINT
+---
+# DestinationRule for simulator (self-signed cert)
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: e2e-simulator
+  namespace: $E2E_NS
+spec:
+  host: e2e-simulator.external
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

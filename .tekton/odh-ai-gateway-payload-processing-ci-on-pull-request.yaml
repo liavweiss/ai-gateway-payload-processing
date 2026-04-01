@@ -6,19 +6,18 @@ metadata:
     build.appstudio.redhat.com/commit_sha: '{{revision}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
+    pipelinesascode.tekton.dev/on-comment: "^/build-konflux"
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-cel-expression: |
       event == "pull_request"
       && target_branch == "main"
-      && ( "./**".pathChanged()
-            || ".tekton/odh-ai-gateway-payload-processing-ci-pull-request.yaml".pathChanged() )
   creationTimestamp: null
   labels:
     appstudio.openshift.io/application: opendatahub-builds
     appstudio.openshift.io/component: odh-ai-gateway-payload-processing-ci
     pipelines.appstudio.openshift.io/type: build
-  name: odh-ai-gateway-payload-processing-ci-pull-request
+  name: odh-ai-gateway-payload-processing-ci-on-pull-request
   namespace: open-data-hub-tenant
 spec:
   params:
@@ -37,12 +36,6 @@ spec:
   - name: additional-tags
     value:
     - 'odh-pr-{{revision}}'
-  - name: build-platforms
-    value:
-    - linux/x86_64
-    - linux/arm64
-    - linux/ppc64le
-    - linux/s390x
   pipelineRef:
     resolver: git
     params:

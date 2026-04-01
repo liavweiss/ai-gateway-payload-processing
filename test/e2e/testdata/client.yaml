@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curl
+  namespace: $E2E_NS
+spec:
+  containers:
+  - name: curl
+    image: curlimages/curl:7.83.1
+    command: ["tail", "-f", "/dev/null"]
