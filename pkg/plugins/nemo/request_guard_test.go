@@ -79,7 +79,7 @@ func TestNemoRequestGuardTypedName(t *testing.T) {
 
 	assert.Equal(t, NemoRequestGuardPluginType, p.TypedName().Name)
 
-	p = p.WithName("my-guardrail")
+	p.WithName("my-guardrail")
 	tn := p.TypedName()
 	assert.Equal(t, NemoRequestGuardPluginType, tn.Type)
 	assert.Equal(t, "my-guardrail", tn.Name)
