@@ -52,4 +52,5 @@ func registerPlugins() {
 	framework.Register(api_translation.APITranslationPluginType, api_translation.APITranslationFactory)
 	framework.Register(apikey_injection.APIKeyInjectionPluginType, apikey_injection.APIKeyInjectionFactory)
 	framework.Register(nemo.NemoRequestGuardPluginType, nemo.NemoRequestGuardFactory)
+	framework.Register(nemo.NemoResponseGuardPluginType, nemo.NemoResponseGuardFactory)
 }
