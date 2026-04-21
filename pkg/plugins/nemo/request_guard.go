@@ -56,7 +56,8 @@ func NemoRequestGuardFactory(name string, rawParameters json.RawMessage, _ frame
 		return nil, fmt.Errorf("failed to create '%s' plugin - %w", NemoRequestGuardPluginType, err)
 	}
 
-	return p.WithName(name), nil
+	p.WithName(name)
+	return p, nil
 }
 
 // NewNemoRequestGuardPlugin builds a NeMo request guard plugin from validated parameters.
