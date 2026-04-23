@@ -133,7 +133,7 @@ func (p *NemoRequestGuardPlugin) ProcessRequest(ctx context.Context, _ *framewor
 // extractMessages returns user-supplied text as a message slice suitable for NeMo's
 // OpenAI-compatible chat endpoint. It supports two payload formats:
 //
-//  1. OpenAI chat: top-level "messages" array → returns the last user message.
+//  1. OpenAI chat: top-level "messages" array → forwards all non-system messages.
 //  2. MCP JSON-RPC: {"jsonrpc":"2.0","params":{"arguments":{…}}} → concatenates
 //     all string argument values into a single user message.
 //
@@ -148,8 +148,9 @@ func extractMessages(body map[string]any) ([]map[string]string, error) {
 	return nil, nil // not an inference request (e.g. API key management, model listing)
 }
 
-// extractOpenAIMessages parses an OpenAI-style "messages" value and returns the
-// last user message, or all messages as a fallback when no user message exists.
+// extractOpenAIMessages parses an OpenAI-style "messages" value. System messages are
+// filtered. TrustyAI does not support this role. All other roles are forwarded so NeMo can evaluate
+// the full conversation context.
 func extractOpenAIMessages(raw any) ([]map[string]string, error) {
 	slice, ok := raw.([]any)
 	if !ok {
@@ -163,18 +164,13 @@ func extractOpenAIMessages(raw any) ([]map[string]string, error) {
 			continue
 		}
 		role, _ := msg["role"].(string)
+		if role == "system" {
+			continue
+		}
 		content, _ := msg["content"].(string)
 		messages = append(messages, map[string]string{"role": role, "content": content})
 	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i]["role"] == "user" {
-			return messages[i : i+1], nil
-		}
-	}
-	if len(messages) > 0 {
-		return messages, nil
-	}
-	return nil, nil
+	return messages, nil
 }
 
 // extractMCPArguments extracts text from an MCP JSON-RPC tools/call

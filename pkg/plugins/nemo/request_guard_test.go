@@ -362,6 +362,43 @@ func TestNemoRequestGuardSendsCorrectPayloadMCP(t *testing.T) {
 	assert.Equal(t, "hello world", msg["content"])
 }
 
+// TestNemoRequestGuardForwardsAllNonSystemMessages verifies that user, assistant, and tool
+// messages are forwarded to NeMo while system messages are filtered out (the /v1/guardrail/checks
+// endpoint rejects the system role with status "error").
+func TestNemoRequestGuardForwardsAllNonSystemMessages(t *testing.T) {
+	var capturedReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedReq))
+		require.NoError(t, json.NewEncoder(w).Encode(nemoAllowedJSON()))
+	}))
+	defer srv.Close()
+
+	p, err := NewNemoRequestGuardPlugin(srv.URL, 30)
+	require.NoError(t, err)
+
+	req := framework.NewInferenceRequest()
+	req.Body["model"] = "gpt-4"
+	req.Body["messages"] = []any{
+		map[string]any{"role": "system", "content": "You are helpful"},
+		map[string]any{"role": "user", "content": "First question"},
+		map[string]any{"role": "assistant", "content": "Answer"},
+		map[string]any{"role": "tool", "content": "Tool output"},
+		map[string]any{"role": "user", "content": "Follow-up"},
+	}
+	err = p.ProcessRequest(context.Background(), framework.NewCycleState(), req)
+	require.NoError(t, err)
+
+	messages, ok := capturedReq["messages"].([]any)
+	require.True(t, ok, "messages should be an array")
+	require.Len(t, messages, 4, "system message must be filtered, 4 remaining forwarded")
+
+	roles := make([]string, len(messages))
+	for i, m := range messages {
+		roles[i] = m.(map[string]any)["role"].(string)
+	}
+	assert.Equal(t, []string{"user", "assistant", "tool", "user"}, roles)
+}
+
 // TestNemoRequestGuardBaseURLTrailingSlash ensures a trailing slash in baseURL doesn't double up.
 func TestNemoRequestGuardBaseURLTrailingSlash(t *testing.T) {
 	var calledPath string
@@ -427,7 +464,7 @@ func TestExtractMessages(t *testing.T) {
 			want: []map[string]string{{"role": "user", "content": "Hello"}},
 		},
 		{
-			name: "conversation — only last user message extracted",
+			name: "multi-turn conversation — all messages forwarded",
 			body: map[string]any{
 				"messages": []any{
 					map[string]any{"role": "user", "content": "First question"},
@@ -435,16 +472,47 @@ func TestExtractMessages(t *testing.T) {
 					map[string]any{"role": "user", "content": "Follow-up"},
 				},
 			},
-			want: []map[string]string{{"role": "user", "content": "Follow-up"}},
+			want: []map[string]string{
+				{"role": "user", "content": "First question"},
+				{"role": "assistant", "content": "Answer"},
+				{"role": "user", "content": "Follow-up"},
+			},
 		},
 		{
-			name: "no user message — all messages returned as fallback",
+			name: "system message filtered out — /v1/guardrail/checks rejects system role",
+			body: map[string]any{
+				"messages": []any{
+					map[string]any{"role": "system", "content": "You are helpful"},
+					map[string]any{"role": "user", "content": "Hello"},
+				},
+			},
+			want: []map[string]string{
+				{"role": "user", "content": "Hello"},
+			},
+		},
+		{
+			name: "system-only conversation — all filtered, returns nil",
 			body: map[string]any{
 				"messages": []any{
 					map[string]any{"role": "system", "content": "You are helpful"},
 				},
 			},
-			want: []map[string]string{{"role": "system", "content": "You are helpful"}},
+			want: nil,
+		},
+		{
+			name: "tool message included — not filtered out",
+			body: map[string]any{
+				"messages": []any{
+					map[string]any{"role": "user", "content": "Use the tool"},
+					map[string]any{"role": "tool", "content": "Tool response data"},
+					map[string]any{"role": "user", "content": "What did it say?"},
+				},
+			},
+			want: []map[string]string{
+				{"role": "user", "content": "Use the tool"},
+				{"role": "tool", "content": "Tool response data"},
+				{"role": "user", "content": "What did it say?"},
+			},
 		},
 		{
 			name:    "messages is not an array — error (caller must fail closed)",
