@@ -362,10 +362,9 @@ func TestNemoRequestGuardSendsCorrectPayloadMCP(t *testing.T) {
 	assert.Equal(t, "hello world", msg["content"])
 }
 
-// TestNemoRequestGuardForwardsAllNonSystemMessages verifies that user, assistant, and tool
-// messages are forwarded to NeMo while system messages are filtered out (the /v1/guardrail/checks
-// endpoint rejects the system role with status "error").
-func TestNemoRequestGuardForwardsAllNonSystemMessages(t *testing.T) {
+// TestNemoRequestGuardForwardsAllMessages verifies that all messages including system
+// are forwarded to NeMo for evaluation.
+func TestNemoRequestGuardForwardsAllMessages(t *testing.T) {
 	var capturedReq map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedReq))
@@ -390,13 +389,13 @@ func TestNemoRequestGuardForwardsAllNonSystemMessages(t *testing.T) {
 
 	messages, ok := capturedReq["messages"].([]any)
 	require.True(t, ok, "messages should be an array")
-	require.Len(t, messages, 4, "system message must be filtered, 4 remaining forwarded")
+	require.Len(t, messages, 5, "all messages including system should be forwarded")
 
 	roles := make([]string, len(messages))
 	for i, m := range messages {
 		roles[i] = m.(map[string]any)["role"].(string)
 	}
-	assert.Equal(t, []string{"user", "assistant", "tool", "user"}, roles)
+	assert.Equal(t, []string{"system", "user", "assistant", "tool", "user"}, roles)
 }
 
 // TestNemoRequestGuardBaseURLTrailingSlash ensures a trailing slash in baseURL doesn't double up.
@@ -479,25 +478,15 @@ func TestExtractMessages(t *testing.T) {
 			},
 		},
 		{
-			name: "system message filtered out — /v1/guardrail/checks rejects system role",
+			name: "single system message",
 			body: map[string]any{
 				"messages": []any{
 					map[string]any{"role": "system", "content": "You are helpful"},
-					map[string]any{"role": "user", "content": "Hello"},
 				},
 			},
 			want: []map[string]string{
-				{"role": "user", "content": "Hello"},
+				{"role": "system", "content": "You are helpful"},
 			},
-		},
-		{
-			name: "system-only conversation — all filtered, returns nil",
-			body: map[string]any{
-				"messages": []any{
-					map[string]any{"role": "system", "content": "You are helpful"},
-				},
-			},
-			want: nil,
 		},
 		{
 			name: "tool message included — not filtered out",
