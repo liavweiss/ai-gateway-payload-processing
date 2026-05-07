@@ -62,9 +62,23 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	provider, _, _ := unstructured.NestedString(obj.Object, "spec", "provider")
-	targetModel, _, _ := unstructured.NestedString(obj.Object, "spec", "targetModel")
-	credsName, _, _ := unstructured.NestedString(obj.Object, "spec", "credentialRef", "name")
+	provider, found, err := unstructured.NestedString(obj.Object, "spec", "provider")
+	if err != nil || !found || provider == "" {
+		r.store.deleteExternalModel(req.NamespacedName)
+		return ctrl.Result{}, fmt.Errorf("ExternalModel %s is missing required field spec.provider", req.NamespacedName)
+	}
+
+	targetModel, found, err := unstructured.NestedString(obj.Object, "spec", "targetModel")
+	if err != nil || !found || targetModel == "" {
+		r.store.deleteExternalModel(req.NamespacedName)
+		return ctrl.Result{}, fmt.Errorf("ExternalModel %s is missing required field spec.targetModel", req.NamespacedName)
+	}
+
+	credsName, found, err := unstructured.NestedString(obj.Object, "spec", "credentialRef", "name")
+	if err != nil || !found || credsName == "" {
+		r.store.deleteExternalModel(req.NamespacedName)
+		return ctrl.Result{}, fmt.Errorf("ExternalModel %s is missing required field spec.credentialRef.name", req.NamespacedName)
+	}
 
 	// targetModel is the model that will be used in the request body when getting inference requests.
 	info := &externalModelInfo{
