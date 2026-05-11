@@ -54,7 +54,7 @@ func NemoResponseGuardFactory(name string, rawParameters json.RawMessage, _ fram
 		}
 	}
 
-	plugin, err := NewNemoResponseGuardPlugin(config.NemoURL, config.TimeoutSeconds)
+	plugin, err := NewNemoResponseGuardPlugin(config.NemoURL, config.TimeoutSeconds, config.ActionVar, config.ReasonVar)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create '%s' plugin - %w", NemoResponseGuardPluginType, err)
 	}
@@ -63,8 +63,9 @@ func NemoResponseGuardFactory(name string, rawParameters json.RawMessage, _ fram
 }
 
 // NewNemoResponseGuardPlugin builds a NeMo response guard plugin from validated parameters.
-func NewNemoResponseGuardPlugin(nemoURL string, timeoutSeconds int) (*NemoResponseGuardPlugin, error) {
-	base, err := newNemoGuardBase(nemoURL, timeoutSeconds)
+// actionVar and reasonVar configure which NeMo output_vars to request; empty strings use defaults.
+func NewNemoResponseGuardPlugin(nemoURL string, timeoutSeconds int, actionVar, reasonVar string) (*NemoResponseGuardPlugin, error) {
+	base, err := newNemoGuardBase(nemoURL, timeoutSeconds, actionVar, reasonVar)
 	if err != nil {
 		return nil, err
 	}
@@ -87,12 +88,12 @@ func (p *NemoResponseGuardPlugin) WithName(name string) *NemoResponseGuardPlugin
 
 // ProcessResponse calls NeMo Guardrails to evaluate output rails on the model response.
 // It extracts assistant messages from the OpenAI-style response body, POSTs them to
-// NeMo's /v1/guardrail/checks endpoint, and returns an errcommon.Error with Forbidden (403)
-// if NeMo flags the content.
+// NeMo's /v1/chat/completions endpoint, and inspects the message_action output variable:
 //
-// NeMo always returns HTTP 200 for both allowed and blocked responses. The block/allow
-// decision is conveyed through the response body "status" field.
-// "success" means the response passed all rails; "blocked" means it is blocked.
+//   - "pass"   → allow the response through.
+//   - "block"  → return errcommon.Forbidden (403) with the block reason.
+//   - "modify" → pass through for now (TODO: support redaction).
+//   - unknown  → fail closed (500).
 func (p *NemoResponseGuardPlugin) ProcessResponse(ctx context.Context, _ *framework.CycleState, response *framework.InferenceResponse) error {
 	messages, err := extractAssistantMessages(response.Body)
 	if err != nil {
@@ -104,23 +105,26 @@ func (p *NemoResponseGuardPlugin) ProcessResponse(ctx context.Context, _ *framew
 
 	model, _ := response.Body["model"].(string)
 
-	reqBody := map[string]any{
-		"model":    model,
-		"messages": messages,
-	}
-	payload, marshalErr := json.Marshal(reqBody)
-	if marshalErr != nil {
-		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("marshal request: %v", marshalErr)}
+	result, err := p.callNemoGuard(ctx, model, messages)
+	if err != nil {
+		return err
 	}
 
-	code, callErr := p.callNemoGuard(ctx, payload)
-	if callErr != nil {
-		if code == errcommon.Forbidden {
-			return errcommon.Error{Code: code, Msg: "response blocked by NeMo guardrails"}
+	switch result.Action {
+	case ActionPass:
+		return nil
+	case ActionModify:
+		// TODO: support redaction by rewriting the message content.
+		return nil
+	case ActionBlock:
+		msg := "response blocked by NeMo guardrails"
+		if result.Reason != "" {
+			msg = result.Reason
 		}
-		return errcommon.Error{Code: code, Msg: callErr.Error()}
+		return errcommon.Error{Code: errcommon.Forbidden, Msg: msg}
+	default:
+		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("unknown NeMo action %q", result.Action)}
 	}
-	return nil
 }
 
 // extractAssistantMessages extracts assistant content from a response body.

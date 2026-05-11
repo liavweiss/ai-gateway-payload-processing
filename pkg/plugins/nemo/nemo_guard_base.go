@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -33,34 +32,61 @@ import (
 )
 
 const (
-	nemoAllowedStatus    = "success"
 	defaultTimeoutSec    = 360
 	maxNemoResponseBytes = 1 << 20 // 1 MiB
+
+	defaultActionVar = "message_action"
+	defaultReasonVar = "block_reason"
+
+	ActionPass   = "pass"
+	ActionBlock  = "block"
+	ActionModify = "modify"
 )
 
 // nemoGuardConfig is the configuration for nemo guard plugins.
 type nemoGuardConfig struct {
 	NemoURL        string `json:"nemoURL"`
 	TimeoutSeconds int    `json:"timeoutSeconds"`
+	ActionVar      string `json:"actionVar"`
+	ReasonVar      string `json:"reasonVar"`
 }
 
-// nemoResponse is NeMo's JSON response from /v1/guardrail/checks.
-type nemoResponse struct {
-	Status      string                         `json:"status"`
-	RailsStatus map[string]nemoRailStatusEntry `json:"rails_status"`
+// nemoCompletionResponse is NeMo's JSON response from /v1/chat/completions.
+type nemoCompletionResponse struct {
+	Choices    []nemoChoice       `json:"choices"`
+	Guardrails nemoGuardrailsData `json:"guardrails"`
 }
 
-type nemoRailStatusEntry struct {
-	Status string `json:"status"`
+type nemoChoice struct {
+	Message nemoMessage `json:"message"`
+}
+
+type nemoMessage struct {
+	Content string `json:"content"`
+	Role    string `json:"role"`
+}
+
+type nemoGuardrailsData struct {
+	ConfigID   string         `json:"config_id"`
+	OutputData map[string]any `json:"output_data"`
+}
+
+// nemoGuardResult holds the parsed outcome from a /v1/chat/completions call.
+type nemoGuardResult struct {
+	Action  string // ActionPass, ActionBlock, or ActionModify
+	Reason  string // human-readable reason (empty for pass)
+	Content string // response content from choices[0].message.content
 }
 
 // nemoGuardBase holds the shared fields and HTTP logic for nemo guard plugins.
 type nemoGuardBase struct {
 	nemoURL    string
 	httpClient *http.Client
+	actionVar  string
+	reasonVar  string
 }
 
-func newNemoGuardBase(nemoURL string, timeoutSeconds int) (*nemoGuardBase, error) {
+func newNemoGuardBase(nemoURL string, timeoutSeconds int, actionVar, reasonVar string) (*nemoGuardBase, error) {
 	if nemoURL == "" {
 		return nil, errors.New("nemoURL is required")
 	}
@@ -68,66 +94,91 @@ func newNemoGuardBase(nemoURL string, timeoutSeconds int) (*nemoGuardBase, error
 	if timeout <= 0 {
 		timeout = defaultTimeoutSec * time.Second
 	}
+	if actionVar == "" {
+		actionVar = defaultActionVar
+	}
+	if reasonVar == "" {
+		reasonVar = defaultReasonVar
+	}
 
 	return &nemoGuardBase{
-		nemoURL: nemoURL,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		nemoURL:    nemoURL,
+		httpClient: &http.Client{Timeout: timeout},
+		actionVar:  actionVar,
+		reasonVar:  reasonVar,
 	}, nil
 }
 
-// callNemoGuard POSTs the payload to the NeMo guardrail checks endpoint, parses the
-// response, and returns an error with the corresponding error code if the content is
-// blocked or NeMo is unreachable. The caller is responsible for constructing the
-// client-facing errcommon.Error from the returned values.
-func (b *nemoGuardBase) callNemoGuard(ctx context.Context, payload []byte) (string, error) {
+// callNemoGuard POSTs a chat-completions request to NeMo with output_vars,
+// parses the response, and returns a nemoGuardResult describing the action taken.
+// The caller provides the model and messages; this method adds the guardrails.options
+// wrapper with the configured output variable names.
+func (b *nemoGuardBase) callNemoGuard(ctx context.Context, model string, messages any) (*nemoGuardResult, error) {
 	logger := log.FromContext(ctx).V(logutil.DEFAULT)
-	log.FromContext(ctx).V(logutil.VERBOSE).Info("calling NeMo guardrails")
+	log.FromContext(ctx).V(logutil.VERBOSE).Info("calling NeMo guardrails", "url", b.nemoURL)
+
+	reqBody := map[string]any{
+		"model":    model,
+		"messages": messages,
+		"guardrails": map[string]any{
+			"options": map[string]any{
+				"output_vars": []string{b.actionVar, b.reasonVar},
+			},
+		},
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		logger.Error(err, "failed to marshal NeMo request")
+		return nil, errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("failed to marshal nemo request: %v", err)}
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, b.nemoURL, bytes.NewReader(payload))
 	if err != nil {
 		logger.Error(err, "failed to create NeMo request")
-		return errcommon.Internal, fmt.Errorf("failed to create nemo request: %w", err)
+		return nil, errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("failed to create nemo request: %v", err)}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := b.httpClient.Do(httpReq)
 	if err != nil {
 		logger.Error(err, "NeMo guardrail call failed")
-		return errcommon.ServiceUnavailable, fmt.Errorf("nemo call failed: %w", err)
+		return nil, errcommon.Error{Code: errcommon.ServiceUnavailable, Msg: fmt.Sprintf("nemo call failed: %v", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		logger.Error(nil, "NeMo guardrail unexpected status", "statusCode", resp.StatusCode)
-		return errcommon.ServiceUnavailable, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		return nil, errcommon.Error{Code: errcommon.ServiceUnavailable, Msg: fmt.Sprintf("unexpected status %d from NeMo", resp.StatusCode)}
 	}
 
 	limited := io.LimitReader(resp.Body, maxNemoResponseBytes)
 	body, err := io.ReadAll(limited)
 	if err != nil {
 		logger.Error(err, "failed to read NeMo response")
-		return errcommon.ServiceUnavailable, fmt.Errorf("failed to read nemo response: %w", err)
+		return nil, errcommon.Error{Code: errcommon.ServiceUnavailable, Msg: fmt.Sprintf("failed to read nemo response: %v", err)}
 	}
 
-	var nemoResp nemoResponse
+	var nemoResp nemoCompletionResponse
 	if err := json.Unmarshal(body, &nemoResp); err != nil {
 		logger.Error(err, "failed to decode NeMo response")
-		return errcommon.ServiceUnavailable, fmt.Errorf("failed to decode nemo response: %w", err)
+		return nil, errcommon.Error{Code: errcommon.ServiceUnavailable, Msg: fmt.Sprintf("failed to decode nemo response: %v", err)}
 	}
 
-	if strings.EqualFold(strings.TrimSpace(nemoResp.Status), nemoAllowedStatus) {
-		logger.Info("allowed by NeMo guardrails")
-		return "", nil
+	result := &nemoGuardResult{Action: ActionPass}
+
+	if len(nemoResp.Choices) > 0 {
+		result.Content = nemoResp.Choices[0].Message.Content
 	}
 
-	railsParts := make([]string, 0, len(nemoResp.RailsStatus))
-	for key, value := range nemoResp.RailsStatus {
-		railsParts = append(railsParts, fmt.Sprintf("%s: %s", key, value.Status))
+	if od := nemoResp.Guardrails.OutputData; od != nil {
+		if action, ok := od[b.actionVar].(string); ok && action != "" {
+			result.Action = action
+		}
+		if reason, ok := od[b.reasonVar].(string); ok {
+			result.Reason = reason
+		}
 	}
-	railsStatus := fmt.Sprintf("[ %s ]", strings.Join(railsParts, " "))
 
-	log.FromContext(ctx).Info("blocked by NeMo guardrails", "railsStatus", railsStatus)
-	return errcommon.Forbidden, fmt.Errorf("blocked by NeMo guardrails")
+	logger.Info("NeMo guardrails result", "action", result.Action, "reason", result.Reason)
+	return result, nil
 }

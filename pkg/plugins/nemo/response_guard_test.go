@@ -43,9 +43,9 @@ func TestNewNemoResponseGuardPlugin(t *testing.T) {
 	}{
 		{
 			name:        "valid config",
-			nemoURL:     "http://nemo:8000/v1/guardrail/checks",
+			nemoURL:     "http://nemo:8000/v1/chat/completions",
 			timeout:     30,
-			wantNemoURL: "http://nemo:8000/v1/guardrail/checks",
+			wantNemoURL: "http://nemo:8000/v1/chat/completions",
 		},
 		{
 			name:    "missing nemoURL — error",
@@ -56,7 +56,7 @@ func TestNewNemoResponseGuardPlugin(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewNemoResponseGuardPlugin(tt.nemoURL, tt.timeout)
+			p, err := NewNemoResponseGuardPlugin(tt.nemoURL, tt.timeout, "", "")
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -69,7 +69,7 @@ func TestNewNemoResponseGuardPlugin(t *testing.T) {
 }
 
 func TestNemoResponseGuardTypedName(t *testing.T) {
-	p, err := NewNemoResponseGuardPlugin("http://nemo:8000/v1/guardrail/checks", 30)
+	p, err := NewNemoResponseGuardPlugin("http://nemo:8000/v1/chat/completions", 30, "", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, NemoResponseGuardPluginType, p.TypedName().Name)
@@ -83,8 +83,6 @@ func TestNemoResponseGuardTypedName(t *testing.T) {
 // --- ProcessResponse: allow / block / error ---
 
 func TestNemoResponseGuardProcessResponse(t *testing.T) {
-	const forbiddenMsg = "response blocked by NeMo guardrails"
-
 	validResponseBody := func(content string) map[string]any {
 		return map[string]any{
 			"choices": []any{
@@ -107,14 +105,9 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 		wantErrCode     string
 	}{
 		{
-			name: "allow: NeMo returns status success",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{
-					"status": "success",
-					"rails_status": map[string]any{
-						"output-rail": map[string]any{"status": "success"},
-					},
-				}); err != nil {
+			name: "pass: NeMo returns message_action pass",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoAllowedJSON()); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 				}
 			},
@@ -122,63 +115,55 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "block: NeMo returns status blocked with per-rail detail",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{
-					"status": "blocked",
-					"rails_status": map[string]any{
-						`huggingface detector check output $hf_model="ibm-granite/granite-guardian-hap-38m"`: map[string]any{"status": "blocked"},
-					},
-				}); err != nil {
+			name: "block: NeMo returns message_action block with reason",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoResponseJSON(ActionBlock, "HAP content detected", "BLOCKED")); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 				}
 			},
 			body:            validResponseBody("this message should be blocked."),
 			wantErr:         true,
-			wantErrContains: forbiddenMsg,
+			wantErrContains: "HAP content detected",
 			wantErrCode:     errcommon.Forbidden,
 		},
 		{
-			name: "block: NeMo returns empty body (fail closed)",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{}); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-			},
-			body:            validResponseBody("Some content"),
-			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
-		},
-		{
-			name: "block: NeMo returns status blocked without rails_status",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{"status": "blocked"}); err != nil {
+			name: "block: NeMo returns message_action block without reason",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoResponseJSON(ActionBlock, "", "BLOCKED")); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 				}
 			},
 			body:            validResponseBody("Toxic content here"),
 			wantErr:         true,
-			wantErrContains: forbiddenMsg,
+			wantErrContains: "response blocked by NeMo guardrails",
 			wantErrCode:     errcommon.Forbidden,
 		},
 		{
-			name: "block: NeMo returns refusal-style text only (no status — fail closed)",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+			name: "modify: NeMo returns message_action modify — allowed (TODO: support redaction)",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoResponseJSON(ActionModify, "PII redacted", "Hello <PERSON>")); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			},
+			body:    validResponseBody("Hello Rob"),
+			wantErr: false,
+		},
+		{
+			name: "pass: NeMo returns empty output_data — defaults to pass",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
 				if err := json.NewEncoder(w).Encode(map[string]any{
-					"extra": "I'm sorry, I can't respond to that.",
+					"choices":    []any{map[string]any{"message": map[string]any{"content": "Hello!", "role": "assistant"}}},
+					"guardrails": map[string]any{},
 				}); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 				}
 			},
-			body:            validResponseBody("Some toxic output"),
-			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
+			body:    validResponseBody("Some content"),
+			wantErr: false,
 		},
 		{
 			name: "error: NeMo returns HTTP 500",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 			},
 			body:            validResponseBody("Hello"),
@@ -187,7 +172,7 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 		},
 		{
 			name: "error: NeMo returns invalid JSON",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				if _, err := fmt.Fprint(w, "not valid json {{{"); err != nil {
@@ -264,7 +249,7 @@ func TestNemoResponseGuardProcessResponse(t *testing.T) {
 				baseURL = srv.URL
 			}
 
-			p, err := NewNemoResponseGuardPlugin(baseURL, 30)
+			p, err := NewNemoResponseGuardPlugin(baseURL, 30, "", "")
 			require.NoError(t, err)
 
 			resp := framework.NewInferenceResponse()
@@ -300,7 +285,7 @@ func TestNemoResponseGuardSendsCorrectPayload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := NewNemoResponseGuardPlugin(srv.URL, 30)
+	p, err := NewNemoResponseGuardPlugin(srv.URL, 30, "", "")
 	require.NoError(t, err)
 
 	resp := framework.NewInferenceResponse()
@@ -318,6 +303,15 @@ func TestNemoResponseGuardSendsCorrectPayload(t *testing.T) {
 	msg := messages[0].(map[string]any)
 	assert.Equal(t, "assistant", msg["role"])
 	assert.Equal(t, "Here is the answer.", msg["content"])
+
+	guardrails, ok := capturedReq["guardrails"].(map[string]any)
+	require.True(t, ok, "guardrails field must be present")
+	options, ok := guardrails["options"].(map[string]any)
+	require.True(t, ok, "options field must be present")
+	outputVars, ok := options["output_vars"].([]any)
+	require.True(t, ok, "output_vars field must be present")
+	assert.Contains(t, outputVars, defaultActionVar)
+	assert.Contains(t, outputVars, defaultReasonVar)
 }
 
 // TestNemoResponseGuardForwardsModel verifies the model field from the response body is forwarded to NeMo.
@@ -329,7 +323,7 @@ func TestNemoResponseGuardForwardsModel(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := NewNemoResponseGuardPlugin(srv.URL, 30)
+	p, err := NewNemoResponseGuardPlugin(srv.URL, 30, "", "")
 	require.NoError(t, err)
 
 	resp := framework.NewInferenceResponse()
@@ -354,7 +348,7 @@ func TestNemoResponseGuardBaseURLTrailingSlash(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := NewNemoResponseGuardPlugin(srv.URL+"//", 30)
+	p, err := NewNemoResponseGuardPlugin(srv.URL+"//", 30, "", "")
 	require.NoError(t, err)
 
 	resp := framework.NewInferenceResponse()
@@ -371,7 +365,7 @@ func TestNemoResponseGuardBaseURLTrailingSlash(t *testing.T) {
 
 // TestNemoResponseGuardFactory verifies the factory parses JSON and sets the instance name.
 func TestNemoResponseGuardFactory(t *testing.T) {
-	params := json.RawMessage(`{"nemoURL":"http://nemo:8000/v1/guardrail/checks"}`)
+	params := json.RawMessage(`{"nemoURL":"http://nemo:8000/v1/chat/completions"}`)
 	p, err := NemoResponseGuardFactory("my-output-guard", params, nil)
 	require.NoError(t, err)
 	require.NotNil(t, p)

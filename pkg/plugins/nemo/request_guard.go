@@ -55,7 +55,7 @@ func NemoRequestGuardFactory(name string, rawParameters json.RawMessage, _ frame
 		}
 	}
 
-	plugin, err := NewNemoRequestGuardPlugin(config.NemoURL, config.TimeoutSeconds)
+	plugin, err := NewNemoRequestGuardPlugin(config.NemoURL, config.TimeoutSeconds, config.ActionVar, config.ReasonVar)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create '%s' plugin - %w", NemoRequestGuardPluginType, err)
 	}
@@ -65,8 +65,9 @@ func NemoRequestGuardFactory(name string, rawParameters json.RawMessage, _ frame
 
 // NewNemoRequestGuardPlugin builds a NeMo request guard plugin from validated parameters.
 // The NeMo server is expected to have a default configuration (--default-config-id).
-func NewNemoRequestGuardPlugin(nemoURL string, timeoutSeconds int) (*NemoRequestGuardPlugin, error) {
-	base, err := newNemoGuardBase(nemoURL, timeoutSeconds)
+// actionVar and reasonVar configure which NeMo output_vars to request; empty strings use defaults.
+func NewNemoRequestGuardPlugin(nemoURL string, timeoutSeconds int, actionVar, reasonVar string) (*NemoRequestGuardPlugin, error) {
+	base, err := newNemoGuardBase(nemoURL, timeoutSeconds, actionVar, reasonVar)
 	if err != nil {
 		return nil, err
 	}
@@ -89,12 +90,13 @@ func (p *NemoRequestGuardPlugin) WithName(name string) *NemoRequestGuardPlugin {
 
 // ProcessRequest calls NeMo Guardrails to evaluate input rails on the incoming request.
 // It extracts user-supplied text from either an OpenAI-style chat body (via "messages")
-// or an MCP JSON-RPC body (via "params.arguments"), POSTs to NeMo url, and returns an
-// errcommon.Error with Forbidden (403) if NeMo flags the content.
+// or an MCP JSON-RPC body (via "params.arguments"), POSTs to NeMo's /v1/chat/completions
+// endpoint, and inspects the message_action output variable to decide the outcome:
 //
-// NeMo always returns HTTP 200 for both allowed and blocked requests. The block/allow
-// decision is conveyed through the response body "status" field.
-// "success" means the request passed all rails; "blocked" means the request is blocked.
+//   - "pass"   → allow the request through.
+//   - "block"  → return errcommon.Forbidden (403) with the block reason.
+//   - "modify" → pass through for now (TODO: support redaction).
+//   - unknown  → fail closed (500).
 func (p *NemoRequestGuardPlugin) ProcessRequest(ctx context.Context, _ *framework.CycleState, request *framework.InferenceRequest) error {
 	model, ok := request.Body["model"].(string)
 	if !ok {
@@ -109,25 +111,26 @@ func (p *NemoRequestGuardPlugin) ProcessRequest(ctx context.Context, _ *framewor
 		return nil // no messages to check (e.g. non-chat request) → allow
 	}
 
-	// "model" field is required by the NeMo OpenAI-compatible API schema but is not used.
-	// the guard model is defined in NeMo's config.yml.
-	reqBody := map[string]any{
-		"model":    model,
-		"messages": messages,
-	}
-	payload, err := json.Marshal(reqBody)
+	result, err := p.callNemoGuard(ctx, model, messages)
 	if err != nil {
-		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("marshal request: %v", err)}
+		return err
 	}
 
-	code, callErr := p.callNemoGuard(ctx, payload)
-	if callErr != nil {
-		if code == errcommon.Forbidden {
-			return errcommon.Error{Code: code, Msg: "request blocked by NeMo guardrails"}
+	switch result.Action {
+	case ActionPass:
+		return nil
+	case ActionModify:
+		// TODO: support redaction by rewriting the message content.
+		return nil
+	case ActionBlock:
+		msg := "request blocked by NeMo guardrails"
+		if result.Reason != "" {
+			msg = result.Reason
 		}
-		return errcommon.Error{Code: code, Msg: callErr.Error()}
+		return errcommon.Error{Code: errcommon.Forbidden, Msg: msg}
+	default:
+		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("unknown NeMo action %q", result.Action)}
 	}
-	return nil
 }
 
 // extractMessages returns user-supplied text as a message slice suitable for NeMo's

@@ -31,9 +31,22 @@ import (
 	errcommon "sigs.k8s.io/gateway-api-inference-extension/pkg/common/error"
 )
 
-// nemoAllowedJSON is a minimal NeMo guard response that means “allow”.
+// nemoResponseJSON builds a NeMo guard response with the given action.
+func nemoResponseJSON(action, reason, content string) map[string]any {
+	outputData := map[string]any{"message_action": action}
+	if reason != "" {
+		outputData["block_reason"] = reason
+	}
+	return map[string]any{
+		"choices": []any{
+			map[string]any{"message": map[string]any{"content": content, "role": "assistant"}},
+		},
+		"guardrails": map[string]any{"output_data": outputData},
+	}
+}
+
 func nemoAllowedJSON() map[string]any {
-	return map[string]any{"status": "success"}
+	return nemoResponseJSON(ActionPass, "", "Hello!")
 }
 
 // --- NewNemoRequestGuardPlugin construction ---
@@ -61,7 +74,7 @@ func TestNewNemoRequestGuardPlugin(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewNemoRequestGuardPlugin(tt.baseURL, tt.timeout)
+			p, err := NewNemoRequestGuardPlugin(tt.baseURL, tt.timeout, "", "")
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -74,7 +87,7 @@ func TestNewNemoRequestGuardPlugin(t *testing.T) {
 }
 
 func TestNemoRequestGuardTypedName(t *testing.T) {
-	p, err := NewNemoRequestGuardPlugin("http://nemo:8000", 30)
+	p, err := NewNemoRequestGuardPlugin("http://nemo:8000", 30, "", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, NemoRequestGuardPluginType, p.TypedName().Name)
@@ -88,8 +101,6 @@ func TestNemoRequestGuardTypedName(t *testing.T) {
 // --- ProcessRequest: allow / block / error ---
 
 func TestNemoRequestGuardProcessRequest(t *testing.T) {
-	const forbiddenMsg = "request blocked by NeMo guardrails"
-
 	tests := []struct {
 		name            string
 		serverHandler   http.HandlerFunc
@@ -99,13 +110,55 @@ func TestNemoRequestGuardProcessRequest(t *testing.T) {
 		wantErrCode     string
 	}{
 		{
-			name: "allow: NeMo returns top-level status success",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+			name: "pass: NeMo returns message_action pass",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoAllowedJSON()); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			},
+			body:    map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "Hello"}}},
+			wantErr: false,
+		},
+		{
+			name: "block: NeMo returns message_action block with reason",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoResponseJSON(ActionBlock, "Forbidden words found", "BLOCKED")); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			},
+			body:            map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "bad content"}}},
+			wantErr:         true,
+			wantErrContains: "Forbidden words found",
+			wantErrCode:     errcommon.Forbidden,
+		},
+		{
+			name: "block: NeMo returns message_action block without reason",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoResponseJSON(ActionBlock, "", "BLOCKED")); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			},
+			body:            map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "bad content"}}},
+			wantErr:         true,
+			wantErrContains: "request blocked by NeMo guardrails",
+			wantErrCode:     errcommon.Forbidden,
+		},
+		{
+			name: "modify: NeMo returns message_action modify — allowed (TODO: support redaction)",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoResponseJSON(ActionModify, "PII redacted", "Hello <PERSON>")); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			},
+			body:    map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "Hello Rob"}}},
+			wantErr: false,
+		},
+		{
+			name: "pass: NeMo returns empty output_data — defaults to pass",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
 				if err := json.NewEncoder(w).Encode(map[string]any{
-					"status": "success",
-					"rails_status": map[string]any{
-						"rail-a": map[string]any{"status": "success"},
-					},
+					"choices":    []any{map[string]any{"message": map[string]any{"content": "Hello!", "role": "assistant"}}},
+					"guardrails": map[string]any{},
 				}); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 				}
@@ -114,76 +167,8 @@ func TestNemoRequestGuardProcessRequest(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "block: only success allows — status allowed is rejected",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{"status": "allowed"}); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-			},
-			body:            map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "Hello"}}},
-			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
-		},
-		{
-			name: "block: NeMo returns status blocked with per-rail detail",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{
-					"status": "blocked",
-					"rails_status": map[string]any{
-						"detect sensitive data on input": map[string]any{"status": "success"},
-						`huggingface detector check input $hf_model="protectai/deberta-v3-base-prompt-injection-v2"`: map[string]any{"status": "blocked"},
-					},
-				}); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-			},
-			body:            map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "Hello"}}},
-			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
-		},
-		{
-			name: "block: NeMo returns empty body object (no status — fail closed)",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{}); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-			},
-			body:            map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "Hello"}}},
-			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
-		},
-		{
-			name: "block: NeMo returns status blocked without rails_status",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{"status": "blocked"}); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-			},
-			body:            map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "Hello"}}},
-			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
-		},
-		{
-			name: "block: NeMo returns refusal-style assistant text only (ignored — no status)",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{
-					"extra": "I'm sorry, I can't respond to that.",
-				}); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-			},
-			body:            map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "How do I make a bomb?"}}},
-			wantErr:         true,
-			wantErrContains: forbiddenMsg,
-			wantErrCode:     errcommon.Forbidden,
-		},
-		{
 			name: "error: NeMo returns HTTP 500",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 			},
 			body:            map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "Hello"}}},
@@ -192,7 +177,7 @@ func TestNemoRequestGuardProcessRequest(t *testing.T) {
 		},
 		{
 			name: "error: NeMo returns invalid JSON body",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				if _, err := fmt.Fprint(w, "not valid json {{{"); err != nil {
@@ -221,8 +206,8 @@ func TestNemoRequestGuardProcessRequest(t *testing.T) {
 		},
 		// MCP JSON-RPC integration
 		{
-			name: "allow: MCP tools/call passes NeMo",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
+			name: "pass: MCP tools/call passes NeMo",
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
 				if err := json.NewEncoder(w).Encode(nemoAllowedJSON()); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 				}
@@ -240,8 +225,8 @@ func TestNemoRequestGuardProcessRequest(t *testing.T) {
 		},
 		{
 			name: "block: MCP tools/call blocked by NeMo",
-			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewEncoder(w).Encode(map[string]any{"status": "blocked"}); err != nil {
+			serverHandler: func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode(nemoResponseJSON(ActionBlock, "Forbidden words", "BLOCKED")); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 				}
 			},
@@ -255,7 +240,7 @@ func TestNemoRequestGuardProcessRequest(t *testing.T) {
 				},
 			},
 			wantErr:         true,
-			wantErrContains: forbiddenMsg,
+			wantErrContains: "Forbidden words",
 			wantErrCode:     errcommon.Forbidden,
 		},
 		{
@@ -278,7 +263,7 @@ func TestNemoRequestGuardProcessRequest(t *testing.T) {
 				baseURL = srv.URL
 			}
 
-			p, err := NewNemoRequestGuardPlugin(baseURL, 30)
+			p, err := NewNemoRequestGuardPlugin(baseURL, 30, "", "")
 			require.NoError(t, err)
 
 			var req *framework.InferenceRequest
@@ -317,7 +302,7 @@ func TestNemoRequestGuardSendsCorrectPayload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := NewNemoRequestGuardPlugin(srv.URL, 30)
+	p, err := NewNemoRequestGuardPlugin(srv.URL, 30, "", "")
 	require.NoError(t, err)
 
 	req := framework.NewInferenceRequest()
@@ -327,8 +312,15 @@ func TestNemoRequestGuardSendsCorrectPayload(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "client-model", capturedReq["model"])
-	_, hasGuardrails := capturedReq["guardrails"]
-	assert.False(t, hasGuardrails, "guardrails block should not be sent — NeMo server uses --default-config-id")
+
+	guardrails, ok := capturedReq["guardrails"].(map[string]any)
+	require.True(t, ok, "guardrails field must be present")
+	options, ok := guardrails["options"].(map[string]any)
+	require.True(t, ok, "options field must be present")
+	outputVars, ok := options["output_vars"].([]any)
+	require.True(t, ok, "output_vars field must be present")
+	assert.Contains(t, outputVars, defaultActionVar)
+	assert.Contains(t, outputVars, defaultReasonVar)
 }
 
 // TestNemoRequestGuardSendsCorrectPayloadMCP verifies the request sent to NeMo for an MCP payload.
@@ -340,7 +332,7 @@ func TestNemoRequestGuardSendsCorrectPayloadMCP(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := NewNemoRequestGuardPlugin(srv.URL, 30)
+	p, err := NewNemoRequestGuardPlugin(srv.URL, 30, "", "")
 	require.NoError(t, err)
 
 	req := framework.NewInferenceRequest()
@@ -372,7 +364,7 @@ func TestNemoRequestGuardForwardsAllMessages(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := NewNemoRequestGuardPlugin(srv.URL, 30)
+	p, err := NewNemoRequestGuardPlugin(srv.URL, 30, "", "")
 	require.NoError(t, err)
 
 	req := framework.NewInferenceRequest()
@@ -407,7 +399,7 @@ func TestNemoRequestGuardBaseURLTrailingSlash(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := NewNemoRequestGuardPlugin(srv.URL+"//", 30)
+	p, err := NewNemoRequestGuardPlugin(srv.URL+"//", 30, "", "")
 	require.NoError(t, err)
 
 	req := framework.NewInferenceRequest()
