@@ -18,7 +18,6 @@ package apikey_injection
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -125,7 +124,7 @@ func TestReconcile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newSecretStore()
 			for _, sec := range tt.initSecrets {
-				_ = store.addOrUpdate(fmt.Sprintf("%s/%s", sec.Namespace, sec.Name), sec)
+				_ = store.addOrUpdate(sec.Namespace, sec.Name, sec)
 			}
 
 			builder := fake.NewClientBuilder()
@@ -155,7 +154,8 @@ func TestReconcile(t *testing.T) {
 			require.NoError(t, err)
 
 			if tt.wantKey != "" {
-				creds, found := store.get(tt.wantKey)
+				parts := strings.Split(tt.wantKey, "/")
+				creds, found := store.get(parts[0], parts[1])
 				assert.Equal(t, tt.wantFound, found)
 				if tt.wantFound {
 					if diff := cmp.Diff(tt.wantCreds, creds); diff != "" {

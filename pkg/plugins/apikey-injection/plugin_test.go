@@ -18,7 +18,6 @@ package apikey_injection
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -134,8 +133,7 @@ func TestProcessRequest(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			store := newSecretStore()
 			for _, secret := range test.secrets {
-				secretKey := fmt.Sprintf("%s/%s", secret.GetNamespace(), secret.GetName())
-				require.NoError(t, store.addOrUpdate(secretKey, secret))
+				require.NoError(t, store.addOrUpdate(secret.GetNamespace(), secret.GetName(), secret))
 			}
 
 			plugin := newTestPlugin(store)

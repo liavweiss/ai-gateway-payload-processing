@@ -71,9 +71,9 @@ func NewAPIKeyInjectionPlugin(reconcilerBuilder func() *builder.Builder, clientR
 			Name: APIKeyInjectionPluginType,
 		},
 		authHeadersGenerators: map[string]auth.AuthHeadersGenerator{
-			provider.OpenAI:        &auth.SimpleAuthGenerator{HeaderName: "Authorization", HeaderValuePrefix: "Bearer "},
-			provider.Anthropic:     &auth.SimpleAuthGenerator{HeaderName: "x-api-key"},
-			provider.AzureOpenAI:   &auth.SimpleAuthGenerator{HeaderName: "api-key"},
+			provider.OpenAI:      &auth.SimpleAuthGenerator{HeaderName: "Authorization", HeaderValuePrefix: "Bearer "},
+			provider.Anthropic:   &auth.SimpleAuthGenerator{HeaderName: "x-api-key"},
+			provider.AzureOpenAI: &auth.SimpleAuthGenerator{HeaderName: "api-key"},
 			// provider.Vertex uses the native GenerateContent API — not used in 3.4 ExternalModel flow.
 			// provider.Vertex:     &auth.SimpleAuthGenerator{HeaderName: "Authorization", HeaderValuePrefix: "Bearer "},
 			provider.VertexOpenAI:  &auth.SimpleAuthGenerator{HeaderName: "Authorization", HeaderValuePrefix: "Bearer "},
@@ -126,8 +126,7 @@ func (p *ApiKeyInjectionPlugin) ProcessRequest(ctx context.Context, cycleState *
 		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("provider '%s' is missing credentialRef namespace", providerName)}
 	}
 
-	secretKey := fmt.Sprintf("%s/%s", credsNamespace, credsName)
-	credentials, found := p.store.get(secretKey)
+	credentials, found := p.store.get(credsNamespace, credsName)
 	if !found {
 		logger.Error(nil, "credentials not found in store", "provider", providerName)
 		return errcommon.Error{Code: errcommon.Internal, Msg: fmt.Sprintf("provider '%s' credentials not found", providerName)}

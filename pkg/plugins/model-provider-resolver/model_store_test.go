@@ -60,3 +60,14 @@ func TestModelStore_DeleteExternalModel(t *testing.T) {
 	_, foundAfter := store.getModelInfo(key)
 	assert.False(t, foundAfter)
 }
+
+func TestModelStore_CrossNamespaceIsolation(t *testing.T) {
+	store := newModelInfoStore()
+	store.addOrUpdateExternalModel(
+		types.NamespacedName{Namespace: "ns-a", Name: "shared-model"},
+		&externalModelInfo{provider: provider.OpenAI},
+	)
+
+	_, found := store.getModelInfo(types.NamespacedName{Namespace: "ns-b", Name: "shared-model"})
+	assert.False(t, found)
+}

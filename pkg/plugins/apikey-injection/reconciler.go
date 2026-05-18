@@ -72,12 +72,12 @@ func (r *secretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if errors.IsNotFound(err) || !secret.DeletionTimestamp.IsZero() || !hasManagedLabel(secret) {
-		r.store.delete(key)
+		r.store.delete(req.Namespace, req.Name)
 		logger.Info("Secret removed from store", "key", key)
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.store.addOrUpdate(key, secret); err != nil {
+	if err := r.store.addOrUpdate(req.Namespace, req.Name, secret); err != nil {
 		return ctrl.Result{}, fmt.Errorf("unable to add or update Secret %s: %w", key, err)
 	}
 

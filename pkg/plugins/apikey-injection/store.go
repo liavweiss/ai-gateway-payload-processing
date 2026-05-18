@@ -27,30 +27,32 @@ import (
 // namespaced name ("namespace/name") to its credential data.
 // The secretReconciler writes to it; the apiKeyInjectionPlugin reads from it.
 type secretStore struct {
-	mu   sync.RWMutex
-	data map[string]map[string]string
+	mu sync.RWMutex
+	// namespace -> secret name -> credentials
+	data map[string]map[string]map[string]string
 }
 
 // newSecretStore creates an empty secretStore.
 func newSecretStore() *secretStore {
 	return &secretStore{
-		data: make(map[string]map[string]string),
+		data: make(map[string]map[string]map[string]string),
 	}
 }
 
 // addOrUpdate extracts all fields from the Secret's data and stores them under
 // the given key. Returns an error if the Secret has no data fields or if any
 // field is empty.
-func (s *secretStore) addOrUpdate(key string, secret *corev1.Secret) error {
+func (s *secretStore) addOrUpdate(namespace, name string, secret *corev1.Secret) error {
+	key := fmt.Sprintf("%s/%s", namespace, name)
 	if len(secret.Data) == 0 {
-		s.delete(key)
+		s.delete(namespace, name)
 		return fmt.Errorf("secret '%s' has no data fields", key)
 	}
 
 	credentials := make(map[string]string)
 	for field, value := range secret.Data {
 		if len(value) == 0 {
-			s.delete(key)
+			s.delete(namespace, name)
 			return fmt.Errorf("secret '%s' has empty field '%s'", key, field)
 		}
 		credentials[field] = string(value)
@@ -58,21 +60,37 @@ func (s *secretStore) addOrUpdate(key string, secret *corev1.Secret) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data[key] = credentials
+	if _, exists := s.data[namespace]; !exists {
+		s.data[namespace] = make(map[string]map[string]string)
+	}
+	s.data[namespace][name] = credentials
 	return nil
 }
 
 // delete removes the entry for the given Secret namespaced name.
-func (s *secretStore) delete(secretKey string) {
+func (s *secretStore) delete(namespace, name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.data, secretKey)
+	secretsByName, found := s.data[namespace]
+	if !found {
+		return
+	}
+	delete(secretsByName, name)
+	if len(secretsByName) == 0 {
+		delete(s.data, namespace)
+	}
 }
 
 // get returns the credentials for the given namespaced name and whether it was found.
-func (s *secretStore) get(secretKey string) (map[string]string, bool) {
+func (s *secretStore) get(namespace, name string) (map[string]string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	credentials, ok := s.data[secretKey]
+
+	secretsByName, found := s.data[namespace]
+	if !found {
+		return nil, false
+	}
+
+	credentials, ok := secretsByName[name]
 	return credentials, ok
 }

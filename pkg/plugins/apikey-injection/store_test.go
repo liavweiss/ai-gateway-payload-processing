@@ -18,6 +18,7 @@ package apikey_injection
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -60,7 +61,7 @@ func TestSecretStore(t *testing.T) {
 		{
 			name: "AddOrUpdate and Get returns stored credentials",
 			initStoreFunc: func(s *secretStore) {
-				_ = s.addOrUpdate("default/openai-key", testSecret("default", "openai-key", map[string]string{"api-key": "sk-key-1"}))
+				_ = s.addOrUpdate("default", "openai-key", testSecret("default", "openai-key", map[string]string{"api-key": "sk-key-1"}))
 			},
 			secretKey: "default/openai-key",
 			wantFound: true,
@@ -75,8 +76,8 @@ func TestSecretStore(t *testing.T) {
 		{
 			name: "AddOrUpdate overwrites existing entry",
 			initStoreFunc: func(s *secretStore) {
-				_ = s.addOrUpdate("default/key", testSecret("default", "key", map[string]string{"api-key": "old-key"}))
-				_ = s.addOrUpdate("default/key", testSecret("default", "key", map[string]string{"api-key": "new-key"}))
+				_ = s.addOrUpdate("default", "key", testSecret("default", "key", map[string]string{"api-key": "old-key"}))
+				_ = s.addOrUpdate("default", "key", testSecret("default", "key", map[string]string{"api-key": "new-key"}))
 			},
 			secretKey: "default/key",
 			wantFound: true,
@@ -85,8 +86,8 @@ func TestSecretStore(t *testing.T) {
 		{
 			name: "delete removes entry",
 			initStoreFunc: func(s *secretStore) {
-				_ = s.addOrUpdate("default/key", testSecret("default", "key", map[string]string{"api-key": "sk-key-1"}))
-				s.delete("default/key")
+				_ = s.addOrUpdate("default", "key", testSecret("default", "key", map[string]string{"api-key": "sk-key-1"}))
+				s.delete("default", "key")
 			},
 			secretKey: "default/key",
 			wantFound: false,
@@ -94,7 +95,7 @@ func TestSecretStore(t *testing.T) {
 		{
 			name: "delete nonexistent key is a no-op",
 			initStoreFunc: func(s *secretStore) {
-				s.delete("default/nonexistent")
+				s.delete("default", "nonexistent")
 			},
 			secretKey: "default/nonexistent",
 			wantFound: false,
@@ -102,7 +103,7 @@ func TestSecretStore(t *testing.T) {
 		{
 			name: "stores multiple fields from secret",
 			initStoreFunc: func(s *secretStore) {
-				_ = s.addOrUpdate("default/bedrock-creds", testSecret("default", "bedrock-creds", map[string]string{
+				_ = s.addOrUpdate("default", "bedrock-creds", testSecret("default", "bedrock-creds", map[string]string{
 					"aws-access-key-id":     "AKIAIOSFODNN7EXAMPLE",
 					"aws-secret-access-key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 				}))
@@ -114,6 +115,14 @@ func TestSecretStore(t *testing.T) {
 				"aws-secret-access-key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 			},
 		},
+		{
+			name: "cross-namespace lookup with same name returns not found",
+			initStoreFunc: func(s *secretStore) {
+				_ = s.addOrUpdate("namespace-a", "shared-name", testSecret("namespace-a", "shared-name", map[string]string{"api-key": "ns-a-key"}))
+			},
+			secretKey: "namespace-b/shared-name",
+			wantFound: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -121,7 +130,8 @@ func TestSecretStore(t *testing.T) {
 			s := newSecretStore()
 			tt.initStoreFunc(s)
 
-			creds, found := s.get(tt.secretKey)
+			parts := strings.SplitN(tt.secretKey, "/", 2)
+			creds, found := s.get(parts[0], parts[1])
 			require.Equal(t, tt.wantFound, found)
 			if tt.wantFound {
 				if diff := cmp.Diff(tt.wantCreds, creds, cmpopts.SortMaps(func(a, b string) bool { return a < b })); diff != "" {
@@ -172,10 +182,11 @@ func TestAddOrUpdateErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newSecretStore()
 
-			err := s.addOrUpdate(tt.key, tt.secret)
+			parts := strings.SplitN(tt.key, "/", 2)
+			err := s.addOrUpdate(parts[0], parts[1], tt.secret)
 
 			require.Error(t, err)
-			_, found := s.get(tt.key)
+			_, found := s.get(parts[0], parts[1])
 			assert.False(t, found, "store should not contain entry when addOrUpdate fails")
 		})
 	}
@@ -190,11 +201,11 @@ func TestSecretStoreConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			key := fmt.Sprintf("default/secret-%d", n)
-			sec := testSecret("default", fmt.Sprintf("secret-%d", n), map[string]string{"api-key": "key"})
-			_ = s.addOrUpdate(key, sec)
-			s.get(key)
-			s.delete(key)
+			secretName := fmt.Sprintf("secret-%d", n)
+			sec := testSecret("default", secretName, map[string]string{"api-key": "key"})
+			_ = s.addOrUpdate("default", secretName, sec)
+			s.get("default", secretName)
+			s.delete("default", secretName)
 		}(i)
 	}
 	wg.Wait()

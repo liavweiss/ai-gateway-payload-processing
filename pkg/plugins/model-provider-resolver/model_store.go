@@ -33,15 +33,15 @@ type externalModelInfo struct {
 // modelInfoStore is a thread-safe in-memory store that maps model names to their provider info.
 // The reconciler writes to it; the plugin reads from it during request processing.
 type modelInfoStore struct {
-	//externalModelToModelInfo maps externalModel CR namespaced name to externalModelInfo
-	externalModelToModelInfo map[string]*externalModelInfo
+	// externalModelToModelInfo maps namespace -> external model name -> externalModelInfo.
+	externalModelToModelInfo map[string]map[string]*externalModelInfo
 
 	lock sync.RWMutex
 }
 
 func newModelInfoStore() *modelInfoStore {
 	return &modelInfoStore{
-		externalModelToModelInfo: make(map[string]*externalModelInfo),
+		externalModelToModelInfo: make(map[string]map[string]*externalModelInfo),
 	}
 }
 
@@ -49,14 +49,24 @@ func newModelInfoStore() *modelInfoStore {
 func (s *modelInfoStore) addOrUpdateExternalModel(externalModelKey types.NamespacedName, modelInfo *externalModelInfo) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	s.externalModelToModelInfo[externalModelKey.String()] = modelInfo
+	if _, found := s.externalModelToModelInfo[externalModelKey.Namespace]; !found {
+		s.externalModelToModelInfo[externalModelKey.Namespace] = make(map[string]*externalModelInfo)
+	}
+	s.externalModelToModelInfo[externalModelKey.Namespace][externalModelKey.Name] = modelInfo
 }
 
 // deleteExternalModel deletes ExternalModel information.
 func (s *modelInfoStore) deleteExternalModel(externalModelKey types.NamespacedName) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	delete(s.externalModelToModelInfo, externalModelKey.String())
+	modelsByNamespace, found := s.externalModelToModelInfo[externalModelKey.Namespace]
+	if !found {
+		return
+	}
+	delete(modelsByNamespace, externalModelKey.Name)
+	if len(modelsByNamespace) == 0 {
+		delete(s.externalModelToModelInfo, externalModelKey.Namespace)
+	}
 }
 
 // getModelInfo returns the modelInfo stored in ExternalModel and bool if found or not.
@@ -65,7 +75,12 @@ func (s *modelInfoStore) getModelInfo(externalModelKey types.NamespacedName) (*e
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
-	externalModelInfo, ok := s.externalModelToModelInfo[externalModelKey.String()]
+	modelsByNamespace, found := s.externalModelToModelInfo[externalModelKey.Namespace]
+	if !found {
+		return nil, false // ExternalModel namespace not found
+	}
+
+	externalModelInfo, ok := modelsByNamespace[externalModelKey.Name]
 	if !ok {
 		return nil, false // ExternalModel not found
 	}
