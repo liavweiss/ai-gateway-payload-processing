@@ -6,7 +6,7 @@ Draft — June 2026
 
 ## Authors
 
-Noy Itzikowitz (Inference Gateway)
+Inference Gateway Team
 
 ## Problem Statement
 

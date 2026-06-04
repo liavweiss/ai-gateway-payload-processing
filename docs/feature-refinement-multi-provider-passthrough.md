@@ -6,7 +6,7 @@
 | **Status** | Draft |
 | **Slack Channel / Thread** | #wg-ai-gateway-internal |
 | **Feature Owner** | Jonathan Zarecki |
-| **Delivery Owner** | Noy Itzikowitz |
+| **Delivery Owner** | Inference Gateway Team |
 | **RFE Council Reviewer** | TBD |
 | **Product** | RHOAI (managed and self-managed) |
 
@@ -135,7 +135,7 @@ Will this feature need to onboard e2e tests for Build Validation pipelines? **YE
 
 | Team | Start Date | EPIC | Dependencies | T-Shirt Size | Approval |
 |------|-----------|------|--------------|-------------|----------|
-| Inference Gateway (Noy Itzikowitz) | June 2026 | TBD | RHAISTRAT-1720 (merged) | S | |
+| Inference Gateway (Inference Gateway Team) | June 2026 | TBD | RHAISTRAT-1720 (merged) | S | |
 | MaaS (MaaS team) | TBD | TBD | AuthPolicy template changes | S | |
 
 ---
