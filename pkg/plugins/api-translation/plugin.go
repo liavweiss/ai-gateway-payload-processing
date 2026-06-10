@@ -147,6 +147,7 @@ func (p *APITranslationPlugin) ProcessRequest(ctx context.Context, cycleState *f
 
 	if isPassthrough(cycleState) {
 		logger.Info("passthrough mode — skipping request translation")
+		// Remove client auth header; apikey-injection plugin adds the provider credential downstream.
 		request.RemoveHeader("authorization")
 		return nil
 	}

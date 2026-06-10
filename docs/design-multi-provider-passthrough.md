@@ -179,6 +179,10 @@ This means the gateway can support any API that a provider exposes, as long as t
 
 The `openai-chat` format is excluded from passthrough even when input and output match. This is because the OpenAI translator performs essential `:path` rewriting — it strips the model prefix path (e.g., `/llm/model/v1/chat/completions` → `/v1/chat/completions`) which is needed for the upstream provider to receive a clean path. For non-OpenAI formats, path rewriting is handled by the HTTPRoute URLRewrite filter.
 
+## Known Limitations
+
+- **NeMo guardrails in passthrough mode:** When passthrough is active for non-OpenAI formats (e.g., Anthropic Messages), the NeMo response guard's `extractAssistantMessages()` looks for a `choices` array (OpenAI format) which doesn't exist in Anthropic responses. The guard silently returns nil and the response passes without inspection. Deployments using NeMo response guards alongside passthrough should be aware that guardrail inspection only applies to OpenAI-format responses.
+
 ## Out of Scope
 
 - Model override / transparent model swapping (separate feature)
